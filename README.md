@@ -35,4 +35,4 @@ python src/performance_monitor.py
 The reason for waiting is to give the programs time to write to shared memory before calling them from another program.
 
 ### Modifying
-The `Hardware Simulator` and `Performance Monitor` are built, but the `Reconstructor` currently estimates all zeros. You can replace the function `compute_phase()` in the `reconstructor.py` file with a working reconstructor.
+The `Hardware Simulator` and `Performance Monitor` are built, but the `Reconstructor` currently estimates all zeros. You can replace the function `def reconstruct_phi(slopes):` in the `reconstructor.py` file with a working reconstructor.
