@@ -7,6 +7,7 @@ from tqdm import tqdm
 import time
 from typing import Union
 from pyMilk.interfacing.isio_shmlib import SHM
+import covr
 
 class PhaseScreen(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -19,6 +20,8 @@ class PhaseScreen(BaseModel):
     ittime: float = 1/500  # seconds
     pixsize: float = None
     thresh: float = 1e-5  # eigenval threshold
+    xx_max: int = None
+    vv_max: int = None
     factor_xx: np.ndarray = None
     factor_vv: np.ndarray = None
     x: np.ndarray = None
@@ -35,21 +38,37 @@ class PhaseScreen(BaseModel):
             self.LT = inv_factor_xx.T.copy()
             self.A = np.einsum("ij,jk->ik", self.ML, self.LT)
             x = np.ones(self.A.shape[1])
-            self.es_path = np.einsum_path(
+            self.es_path_factored = np.einsum_path(
                 "ij,jk,k...->i...",
                 self.ML,
                 self.LT,
                 x,
                 optimize="optimal"
             )
+            self.es_path_classic = np.einsum_path(
+                "ij,j...->i...", 
+                self.A, x, optimize="optimal"
+            )
+            res = self.test_speed(10)
+            if res["classic"] > res["factored"]:
+                # classic was slower, use factored
+                self.dot = self.dot_factored
+            else:
+                # factored was slower, use classic
+                self.dot = self.dot_classic
 
-        def dot(self, x):
+        def dot_classic(self, x):
+            return np.einsum(
+                "ij,j...->i...",
+                self.A, x, optimize=self.es_path_classic[0])
+        
+        def dot_factored(self, x):
             return np.einsum(
                 "ij,jk,k...->i...",
                 self.ML,
                 self.LT,
                 x,
-                optimize=self.es_path[0])
+                optimize=self.es_path_factored[0])
         
         @property
         def shape(self):
@@ -58,18 +77,17 @@ class PhaseScreen(BaseModel):
         def test_speed(self, ntests=100, seed=1):
             rng = np.random.default_rng(seed)
             x = rng.normal(size=[self.shape[1],ntests])
-            es_path_original = np.einsum_path(
-                "ij,j...->i...", 
-                self.A, x, optimize="optimal")[0]
             t1 = time.time()
-            self.dot(x)
+            self.dot_factored(x)
             t2 = time.time()
-            np.einsum(
-                "ij,j...->i...",
-                self.A, x, optimize=es_path_original)
+            self.dot_classic(x)
             t3 = time.time()
-            print(f"original: {(t3-t2)/ntests:0.3e}")
-            print(f"improved: {(t2-t1)/ntests:0.3e}")
+            print(f"classic:  {(t3-t2)/ntests:0.3e}")
+            print(f"factored: {(t2-t1)/ntests:0.3e}")
+            return {
+                "classic": (t3-t2)/ntests,
+                "factored": (t2-t1)/ntests
+                }
 
     state_matrix: StateMatrix = None
 
@@ -89,7 +107,7 @@ class PhaseScreen(BaseModel):
         sigma_xx = self._covariance(
             xx, yy, xx, yy
         )
-        self.factor_xx, inv_factor_xx = self._factorh(sigma_xx)
+        self.factor_xx, inv_factor_xx = self._factorh(sigma_xx, self.xx_max)
 
         sigma_yx = self.laminar * self._covariance(
             xx+self.wind[0]*self.ittime, yy+self.wind[1]*self.ittime, xx, yy
@@ -97,20 +115,23 @@ class PhaseScreen(BaseModel):
         state_matrix = self.StateMatrix(sigma_yx, inv_factor_xx)
         sigma_vv = sigma_xx - state_matrix.dot(state_matrix.dot(sigma_xx).T).T
         self.state_matrix = state_matrix
-        self.factor_vv, _ = self._factorh(sigma_vv)
+        self.factor_vv, _ = self._factorh(sigma_vv, self.vv_max)
         self.x = self.factor_xx @ self.rng.normal(size=self.factor_xx.shape[1])
 
     def _covariance(self, x_in, y_in, x_out, y_out):
-        rr = (x_out[:, None]-x_in[None, :])**2 + \
-            (y_out[:, None]-y_in[None, :])**2
+        rr = ((x_out[:, None]-x_in[None, :])**2 + \
+            (y_out[:, None]-y_in[None, :])**2)**0.5
         cov = aotools.phase_covariance(
-            rr**0.5, self.r0, self.L0
+            rr, self.r0, self.L0
             )*(0.5/(np.pi*2))**2
         return cov
 
-    def _factorh(self, symmetric_matrix):
+    def _factorh(self, symmetric_matrix, n_modes=None):
         vals, vecs = np.linalg.eigh(symmetric_matrix)
-        valid = vals > self.thresh
+        if n_modes is None:
+            valid = vals > self.thresh
+        else:
+            valid = vals >= vals[vals.argsort()[-n_modes]]
         vecs = vecs[:, valid]
         vals = vals[valid]
         factor = vecs * (vals**0.5)[None,:]
@@ -281,6 +302,7 @@ if __name__ == "__main__":
         thresh=1e-3, # (e.g) 1e-2 -> poor detail, 1e-10 -> fine detail
         laminar=0.999,
         r0 = 0.2,
+        xx_max = 500 # only propagate the first 500 modes in the state, for speed
     )
 
     shwfs = SHWFS(pupil=pupil, nsubx=nsubx, fovx=fovx)
