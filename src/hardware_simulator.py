@@ -7,7 +7,7 @@ from tqdm import tqdm
 import time
 from typing import Union
 from pyMilk.interfacing.isio_shmlib import SHM
-import covr
+import aocov
 
 class PhaseScreen(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -119,10 +119,9 @@ class PhaseScreen(BaseModel):
         self.x = self.factor_xx @ self.rng.normal(size=self.factor_xx.shape[1])
 
     def _covariance(self, x_in, y_in, x_out, y_out):
-        rr = ((x_out[:, None]-x_in[None, :])**2 + \
-            (y_out[:, None]-y_in[None, :])**2)**0.5
-        cov = aotools.phase_covariance(
-            rr, self.r0, self.L0
+        cov = aocov.phase_covariance_xyxy(
+            x_out, y_out, x_in, y_in,
+            self.r0, self.L0
             )*(0.5/(np.pi*2))**2
         return cov
 
